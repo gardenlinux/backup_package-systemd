@@ -1,0 +1,23 @@
+on: push
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [ amd64, arm64v8 ]
+    steps:
+      - uses: actions/checkout@v3
+      - name: setup
+        run: |
+          ls -lah /proc/sys/fs/binfmt_misc
+          wget -q http://deb.debian.org/debian/pool/main/q/qemu/qemu-user-static_8.0.4+dfsg-3+b1_amd64.deb
+          sudo dpkg -i qemu-user-static_8.0.4+dfsg-3+b1_amd64.deb
+          sudo dd bs=1M if=/usr/lib/binfmt.d/qemu-aarch64.conf of=/proc/sys/fs/binfmt_misc/register
+          ls -lah /proc/sys/fs/binfmt_misc
+      - name: build
+        run: podman run --rm -v "$PWD:/mnt" -e DEB_BUILD_OPTIONS="nocheck" ghcr.io/gardenlinux/package-build:${{ matrix.arch }} build --debian-source systemd git+https://github.com/systemd/systemd-stable.git#v254.3 /mnt/systemd
+      - uses: actions/upload-artifact@v3
+        with:
+          name: ${{ matrix.arch }}
+          path: output
