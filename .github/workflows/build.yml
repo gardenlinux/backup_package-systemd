@@ -1,55 +1,140 @@
 on: push
 jobs:
-  build:
+  build_source:
+    name: build source pkg
+    outputs:
+      pkg: ${{ steps.build.outputs.pkg }}
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        arch: [ amd64, arm64v8 ]
     steps:
       - uses: actions/checkout@v3
-      - name: setup
-        run: |
-          ls -lah /proc/sys/fs/binfmt_misc
-          wget -q http://deb.debian.org/debian/pool/main/q/qemu/qemu-user-static_8.0.4+dfsg-3+b1_amd64.deb
-          sudo dpkg -i qemu-user-static_8.0.4+dfsg-3+b1_amd64.deb
-          sudo dd bs=1M if=/usr/lib/binfmt.d/qemu-aarch64.conf of=/proc/sys/fs/binfmt_misc/register
-          ls -lah /proc/sys/fs/binfmt_misc
+      - name: setup binfmt
+        run: sudo podman run --privileged "ghcr.io/gardenlinux/binfmt_container"
       - name: build
+        id: build
         run: |
           mkdir output
           chmod 777 output
-          podman run --rm -v "$PWD/output:/home/dev/work" -v "$PWD:/mnt" -e DEB_BUILD_OPTIONS="nocheck" ghcr.io/gardenlinux/package-build/${{ matrix.arch }}:${{ matrix.arch }} build --debian-source systemd git+https://github.com/systemd/systemd-stable.git#v254.3 /mnt/systemd
+          pkg="$(podman run --rm -v "$PWD/output:/home/dev/work" -v "$PWD:/mnt" -e DEB_BUILD_OPTIONS="nocheck" ghcr.io/gardenlinux/package-build/amd64:amd64 build_source --debian-source systemd git+https://github.com/systemd/systemd-stable.git#v254.5 /mnt/systemd)"
           sudo chown -R "$(id -u):$(id -g)" output
+          echo "pkg=$pkg" | tee "$GITHUB_ENV" "$GITHUB_OUTPUT"
       - uses: actions/upload-artifact@v3
         with:
-          name: ${{ matrix.arch }}
+          name: ${{ env.pkg }}
           path: output
-  publish:
-    if: ${{ github.ref == 'refs/heads/main' }}
-    needs: build
+  build_all:
+    name: build architecture independent pkgs
+    needs: build_source
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v3
       - uses: actions/download-artifact@v3
         with:
-          name: amd64
-          path: output_amd64
+          name: ${{ needs.build_source.outputs.pkg }}
+          path: output
+      - name: setup binfmt
+        run: sudo podman run --privileged "ghcr.io/gardenlinux/binfmt_container"
+      - name: build
+        id: build
+        run: |
+          chmod 777 output
+          pkg="$(podman run --rm -v "$PWD/output:/home/dev/work" -v "$PWD:/mnt" -e DEB_BUILD_OPTIONS="nocheck" ghcr.io/gardenlinux/package-build/amd64:amd64 build_indep ${{ needs.build_source.outputs.pkg }}.dsc)"
+          sudo chown -R "$(id -u):$(id -g)" output
+          echo "pkg=$pkg" | tee "$GITHUB_ENV" "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@v3
+        with:
+          name: ${{ env.pkg }}
+          path: output
+  build_amd64:
+    name: build amd64 pkgs
+    needs: build_source
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
       - uses: actions/download-artifact@v3
         with:
-          name: arm64v8
-          path: output_arm64v8
-      - name: publish
+          name: ${{ needs.build_source.outputs.pkg }}
+          path: output
+      - name: setup binfmt
+        run: sudo podman run --privileged "ghcr.io/gardenlinux/binfmt_container"
+      - name: build
+        id: build
         run: |
-          shopt -s nullglob
-          package="$(awk '/^Source:/ { print $2 }' < output_amd64/*.changes)"
-          version="$(awk '/^Version:/ { print $2 }' < output_amd64/*.changes)"
-          git tag "$version"
-          git push --force origin "$version"
-          release="$(.github/workflows/release.sh ${{ secrets.GITHUB_TOKEN }} ${{ github.repository }} create "$version" "$package $version" 'created by GitHub actions run [${{ github.run_id }}](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }})')"
-          for f in output_amd64/*.deb; do
-            .github/workflows/release.sh ${{ secrets.GITHUB_TOKEN }} ${{ github.repository }} upload "$release" "$f"
-          done
-          for f in output_arm64v8/*_arm64.deb; do
-            .github/workflows/release.sh ${{ secrets.GITHUB_TOKEN }} ${{ github.repository }} upload "$release" "$f"
-          done
+          chmod 777 output
+          pkg="$(podman run --rm -v "$PWD/output:/home/dev/work" -v "$PWD:/mnt" -e DEB_BUILD_OPTIONS="nocheck" ghcr.io/gardenlinux/package-build/amd64:amd64 build_archdep ${{ needs.build_source.outputs.pkg }}.dsc)"
+          sudo chown -R "$(id -u):$(id -g)" output
+          echo "pkg=$pkg" | tee "$GITHUB_ENV" "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@v3
+        with:
+          name: ${{ env.pkg }}
+          path: output
+  build_arm64:
+    name: build arm64 pkgs
+    needs: build_source
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - uses: actions/download-artifact@v3
+        with:
+          name: ${{ needs.build_source.outputs.pkg }}
+          path: output
+      - name: setup binfmt
+        run: sudo podman run --privileged "ghcr.io/gardenlinux/binfmt_container"
+      - name: build
+        id: build
+        run: |
+          chmod 777 output
+          pkg="$(podman run --rm -v "$PWD/output:/home/dev/work" -v "$PWD:/mnt" -e DEB_BUILD_OPTIONS="nocheck" ghcr.io/gardenlinux/package-build/amd64:arm64v8 build_archdep ${{ needs.build_source.outputs.pkg }}.dsc)"
+          sudo chown -R "$(id -u):$(id -g)" output
+          echo "pkg=$pkg" | tee "$GITHUB_ENV" "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@v3
+        with:
+          name: ${{ env.pkg }}
+          path: output
+  # build:
+  #   runs-on: ubuntu-latest
+  #   strategy:
+  #     fail-fast: false
+  #     matrix:
+  #       arch: [ amd64, arm64v8 ]
+  #   steps:
+  #     - uses: actions/checkout@v3
+  #     - name: setup binfmt
+  #       run: sudo podman run --privileged "ghcr.io/gardenlinux/binfmt_container"
+  #     - name: build
+  #       run: |
+  #         mkdir output
+  #         chmod 777 output
+  #         podman run --rm -v "$PWD/output:/home/dev/work" -v "$PWD:/mnt" -e DEB_BUILD_OPTIONS="nocheck" ghcr.io/gardenlinux/package-build/${{ matrix.arch }}:${{ matrix.arch }} build --debian-source systemd git+https://github.com/systemd/systemd-stable.git#v254.3 /mnt/systemd
+  #         sudo chown -R "$(id -u):$(id -g)" output
+  #     - uses: actions/upload-artifact@v3
+  #       with:
+  #         name: ${{ matrix.arch }}
+  #         path: output
+  # publish:
+  #   if: ${{ github.ref == 'refs/heads/main' }}
+  #   needs: build
+  #   runs-on: ubuntu-latest
+  #   steps:
+  #     - uses: actions/checkout@v3
+  #     - uses: actions/download-artifact@v3
+  #       with:
+  #         name: amd64
+  #         path: output_amd64
+  #     - uses: actions/download-artifact@v3
+  #       with:
+  #         name: arm64v8
+  #         path: output_arm64v8
+  #     - name: publish
+  #       run: |
+  #         shopt -s nullglob
+  #         package="$(awk '/^Source:/ { print $2 }' < output_amd64/*.changes)"
+  #         version="$(awk '/^Version:/ { print $2 }' < output_amd64/*.changes)"
+  #         git tag "$version"
+  #         git push --force origin "$version"
+  #         release="$(.github/workflows/release.sh ${{ secrets.GITHUB_TOKEN }} ${{ github.repository }} create "$version" "$package $version" 'created by GitHub actions run [${{ github.run_id }}](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }})')"
+  #         for f in output_amd64/*.deb; do
+  #           .github/workflows/release.sh ${{ secrets.GITHUB_TOKEN }} ${{ github.repository }} upload "$release" "$f"
+  #         done
+  #         for f in output_arm64v8/*_arm64.deb; do
+  #           .github/workflows/release.sh ${{ secrets.GITHUB_TOKEN }} ${{ github.repository }} upload "$release" "$f"
+  #         done
